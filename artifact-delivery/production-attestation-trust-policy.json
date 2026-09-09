@@ -1,0 +1,28 @@
+{
+  "policyVersion": 1,
+  "id": "ordivon-production-keyless-r1",
+  "acceptedBundleMediaTypes": [
+    "application/vnd.dev.sigstore.bundle.v0.3+json"
+  ],
+  "signers": [
+    {
+      "id": "github-actions-release",
+      "mode": "keyless",
+      "allowedBuilderIds": [
+        "https://github.com/actions/runner/github-hosted"
+      ],
+      "requireTransparencyLog": true,
+      "certificateIdentity": "https://github.com/zycxfyh/ordivon-artifact-release-trust/.github/workflows/artifact-keyless-sign.yml@refs/heads/main",
+      "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
+      "githubActions": {
+        "repository": "zycxfyh/ordivon-artifact-release-trust",
+        "workflowRef": "zycxfyh/ordivon-artifact-release-trust/.github/workflows/artifact-keyless-sign.yml@refs/heads/main",
+        "ref": "refs/heads/main",
+        "shaAuthority": "runtime",
+        "name": "Artifact Keyless Sign",
+        "trigger": "workflow_dispatch"
+      }
+    }
+  ],
+  "notes": "Stable production keyless identity policy. Exact workflow occurrence SHA is supplied by the protected GitHub environment at runtime and must equal GITHUB_SHA."
+}

@@ -1,0 +1,329 @@
+name: Artifact Keyless Sign
+
+on:
+  workflow_dispatch:
+    inputs:
+      attestation_kind:
+        description: Attestation semantic type prepared before signing
+        type: choice
+        required: true
+        options:
+          - vsa
+          - provenance
+      subject_path:
+        description: Repository-relative artifact subject path
+        type: string
+        required: true
+      statement_path:
+        description: Repository-relative in-toto Statement JSON path; required for VSA, optional for Provenance because prepare may generate it in-run
+        type: string
+        required: false
+      profile_path:
+        description: Repository-relative Artifact Delivery profile path
+        type: string
+        required: true
+      request_path:
+        description: Optional repository-relative digest-bound delivery request for Provenance
+        type: string
+        required: false
+      trust_policy_path:
+        description: Repository-relative attestation trust policy path
+        type: string
+        required: true
+      signer_id:
+        description: Exact signer id in the protected trust policy
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: artifact-keyless-sign-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      manifest_sha256: ${{ steps.payload.outputs.manifest_sha256 }}
+      policy_sha256: ${{ steps.payload.outputs.policy_sha256 }}
+    steps:
+      - name: Checkout exact source occurrence
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install Artifact Delivery validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/artifact-delivery-venv"
+          "$RUNNER_TEMP/artifact-delivery-venv/bin/python" -m pip install --disable-pip-version-check -r config/artifact-delivery-requirements.txt
+
+      - name: Install pinned Cosign without OIDC authority
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Validate semantic attestation and build digest-bound signing payload
+        id: payload
+        shell: bash
+        env:
+          KIND: ${{ inputs.attestation_kind }}
+          SUBJECT: ${{ inputs.subject_path }}
+          STATEMENT: ${{ inputs.statement_path }}
+          PROFILE: ${{ inputs.profile_path }}
+          REQUEST: ${{ inputs.request_path }}
+          POLICY: ${{ inputs.trust_policy_path }}
+          SIGNER_ID: ${{ inputs.signer_id }}
+        run: |
+          set -euo pipefail
+          py="$RUNNER_TEMP/artifact-delivery-venv/bin/python"
+          "$py" - <<'PY'
+          import os,pathlib
+          root=pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          names=['SUBJECT','PROFILE','POLICY']
+          if os.environ.get('KIND') == 'vsa':
+              names.append('STATEMENT')
+          elif os.environ.get('STATEMENT'):
+              names.append('STATEMENT')
+          if os.environ.get('REQUEST'):
+              names.append('REQUEST')
+          for name in names:
+              raw=os.environ.get(name,'')
+              candidate=pathlib.Path(raw)
+              if not raw or candidate.is_absolute() or '..' in candidate.parts:
+                  raise SystemExit(f'{name} must be a repository-relative path without traversal')
+              lexical=root/candidate
+              current=root
+              for part in candidate.parts:
+                  current=current/part
+                  if current.is_symlink():
+                      raise SystemExit(f'{name} must not traverse symlinks')
+              resolved=lexical.resolve(strict=True)
+              if not resolved.is_relative_to(root) or not resolved.is_file():
+                  raise SystemExit(f'{name} must resolve to a regular file inside the repository')
+          PY
+          "$py" scripts/artifact_delivery.py validate-attestation-trust-policy "$POLICY" > "$RUNNER_TEMP/policy-validation.json"
+          "$py" - "$RUNNER_TEMP/policy-validation.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1]))
+          if value.get('status') != 'PASS':
+              raise SystemExit('attestation trust policy failed validation')
+          PY
+          "$py" scripts/artifact_delivery.py validate-profile "$PROFILE" > "$RUNNER_TEMP/profile-validation.json"
+          "$py" - "$RUNNER_TEMP/profile-validation.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1]))
+          if value.get('status') != 'PASS':
+              raise SystemExit('delivery profile failed validation')
+          PY
+          if [ "$KIND" = vsa ]; then
+            test -n "$STATEMENT"
+            "$py" scripts/artifact_delivery.py verify-vsa --statement "$STATEMENT" --subject "$SUBJECT" --profile "$PROFILE" > "$RUNNER_TEMP/semantic.json"
+          else
+            if [ -z "$STATEMENT" ]; then
+              STATEMENT="$RUNNER_TEMP/generated-slsa-provenance.json"
+              "$py" scripts/artifact_delivery.py attest-slsa \
+                --profile "$PROFILE" \
+                --subject "$SUBJECT" \
+                --material .github/workflows/artifact-keyless-sign.yml \
+                --builder-id https://github.com/actions/runner/github-hosted \
+                --build-type "https://github.com/$GITHUB_REPOSITORY/actions/workflows/artifact-keyless-sign.yml" \
+                --output "$STATEMENT" >/dev/null
+            fi
+            if [ -n "$REQUEST" ]; then
+              "$py" scripts/artifact_delivery.py verify-provenance --statement "$STATEMENT" --subject "$SUBJECT" --profile "$PROFILE" --request "$REQUEST" > "$RUNNER_TEMP/semantic.json"
+            else
+              "$py" scripts/artifact_delivery.py verify-provenance --statement "$STATEMENT" --subject "$SUBJECT" --profile "$PROFILE" > "$RUNNER_TEMP/semantic.json"
+            fi
+          fi
+          "$py" - "$RUNNER_TEMP/semantic.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1]))
+          if value.get('status') != 'PASS':
+              raise SystemExit('attestation semantic validation failed')
+          PY
+
+          cosign_path="$(command -v cosign)"
+          test -x "$cosign_path"
+          test "$(sha256sum "$cosign_path" | awk '{print $1}')" = "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+
+          payload="$RUNNER_TEMP/keyless-payload"
+          mkdir -p "$payload/subject"
+          subject_name="$(basename "$SUBJECT")"
+          cp -- "$SUBJECT" "$payload/subject/$subject_name"
+          cp -- "$STATEMENT" "$payload/statement.json"
+          cp -- "$POLICY" "$payload/trust-policy.json"
+          cp -- scripts/artifact_keyless_release.py "$payload/artifact_keyless_release.py"
+          cp -- "$cosign_path" "$payload/cosign"
+          chmod 0755 "$payload/cosign"
+          "$py" - "$payload" "$subject_name" "$SIGNER_ID" "$KIND" <<'PY'
+          import hashlib,json,pathlib,sys
+          root=pathlib.Path(sys.argv[1])
+          subject_name,signer_id,kind=sys.argv[2:]
+          rels=[f'subject/{subject_name}','statement.json','trust-policy.json','artifact_keyless_release.py','cosign']
+          def sha(path):
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              return h.hexdigest()
+          value={
+              'schemaVersion':1,
+              'attestationKind':kind,
+              'signerId':signer_id,
+              'subjectRelativePath':rels[0],
+              'statementRelativePath':'statement.json',
+              'policyRelativePath':'trust-policy.json',
+              'bridgeRelativePath':'artifact_keyless_release.py',
+              'cosignRelativePath':'cosign',
+              'files':{rel:sha(root/rel) for rel in rels},
+          }
+          (root/'payload-manifest.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          manifest_sha="$(sha256sum "$payload/payload-manifest.json" | awk '{print $1}')"
+          policy_sha="$(sha256sum "$payload/trust-policy.json" | awk '{print $1}')"
+          echo "manifest_sha256=$manifest_sha" >> "$GITHUB_OUTPUT"
+          echo "policy_sha256=$policy_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload prepared payload without OIDC authority
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: artifact-keyless-signing-payload
+          path: ${{ runner.temp }}/keyless-payload/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: artifact-release-production
+    permissions:
+      actions: read
+      id-token: write
+    outputs:
+      bundle_b64: ${{ steps.sign.outputs.bundle_b64 }}
+      bundle_sha256: ${{ steps.sign.outputs.bundle_sha256 }}
+      result_b64: ${{ steps.sign.outputs.result_b64 }}
+      result_sha256: ${{ steps.sign.outputs.result_sha256 }}
+    steps:
+      - name: Download exact prepared payload using GitHub API only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          mkdir -p "$RUNNER_TEMP/keyless-input"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o "$RUNNER_TEMP/keyless-input/payload.zip"
+          python3 -m zipfile -e "$RUNNER_TEMP/keyless-input/payload.zip" "$RUNNER_TEMP/keyless-input/payload"
+
+      - name: Verify protected release authority and payload digests
+        shell: bash
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ vars.ORDIVON_RELEASE_WORKFLOW_SHA }}
+          EXPECTED_POLICY_SHA256: ${{ vars.ORDIVON_RELEASE_TRUST_POLICY_SHA256 }}
+          PREPARED_MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
+          PREPARED_POLICY_SHA256: ${{ needs.prepare.outputs.policy_sha256 }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/keyless-input/payload"
+          [[ "$EXPECTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_POLICY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_WORKFLOW_SHA"
+          actual_manifest="$(sha256sum "$root/payload-manifest.json" | awk '{print $1}')"
+          actual_policy="$(sha256sum "$root/trust-policy.json" | awk '{print $1}')"
+          test "$actual_manifest" = "$PREPARED_MANIFEST_SHA256"
+          test "$actual_policy" = "$PREPARED_POLICY_SHA256"
+          test "$actual_policy" = "$EXPECTED_POLICY_SHA256"
+          python3 - "$root" <<'PY'
+          import hashlib,json,pathlib,sys
+          root=pathlib.Path(sys.argv[1])
+          value=json.load(open(root/'payload-manifest.json'))
+          for rel,expected in value['files'].items():
+              path=root/rel
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              if h.hexdigest()!=expected:
+                  raise SystemExit(f'payload digest mismatch: {rel}')
+          PY
+
+      - name: Obtain Fulcio identity, sign, and immediately reverify exact workflow occurrence
+        id: sign
+        shell: bash
+        env:
+          ORDIVON_RELEASE_TRUST_POLICY_SHA256: ${{ vars.ORDIVON_RELEASE_TRUST_POLICY_SHA256 }}
+          ORDIVON_RELEASE_WORKFLOW_SHA: ${{ vars.ORDIVON_RELEASE_WORKFLOW_SHA }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/keyless-input/payload"
+          chmod 0755 "$root/cosign"
+          readarray -t fields < <(python3 - "$root/payload-manifest.json" <<'PY'
+          import json,sys
+          v=json.load(open(sys.argv[1]))
+          print(v['subjectRelativePath'])
+          print(v['statementRelativePath'])
+          print(v['policyRelativePath'])
+          print(v['signerId'])
+          PY
+          )
+          python3 "$root/artifact_keyless_release.py" sign \
+            --subject "$root/${fields[0]}" \
+            --statement "$root/${fields[1]}" \
+            --trust-policy "$root/${fields[2]}" \
+            --signer-id "${fields[3]}" \
+            --cosign "$root/cosign" \
+            --bundle "$root/attestation.sigstore.json" \
+            --output "$root/signing-result.json"
+          bundle_sha="$(sha256sum "$root/attestation.sigstore.json" | awk '{print $1}')"
+          result_sha="$(sha256sum "$root/signing-result.json" | awk '{print $1}')"
+          bundle_size="$(wc -c < "$root/attestation.sigstore.json")"
+          result_size="$(wc -c < "$root/signing-result.json")"
+          test "$bundle_size" -lt 700000
+          test "$result_size" -lt 200000
+          echo "bundle_sha256=$bundle_sha" >> "$GITHUB_OUTPUT"
+          echo "result_sha256=$result_sha" >> "$GITHUB_OUTPUT"
+          echo "bundle_b64=$(base64 -w0 "$root/attestation.sigstore.json")" >> "$GITHUB_OUTPUT"
+          echo "result_b64=$(base64 -w0 "$root/signing-result.json")" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Reconstruct exact signed evidence outside OIDC authority
+        shell: bash
+        env:
+          BUNDLE_B64: ${{ needs.sign.outputs.bundle_b64 }}
+          BUNDLE_SHA256: ${{ needs.sign.outputs.bundle_sha256 }}
+          RESULT_B64: ${{ needs.sign.outputs.result_b64 }}
+          RESULT_SHA256: ${{ needs.sign.outputs.result_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/signed-evidence"
+          printf '%s' "$BUNDLE_B64" | base64 -d > "$RUNNER_TEMP/signed-evidence/attestation.sigstore.json"
+          printf '%s' "$RESULT_B64" | base64 -d > "$RUNNER_TEMP/signed-evidence/signing-result.json"
+          test "$(sha256sum "$RUNNER_TEMP/signed-evidence/attestation.sigstore.json" | awk '{print $1}')" = "$BUNDLE_SHA256"
+          test "$(sha256sum "$RUNNER_TEMP/signed-evidence/signing-result.json" | awk '{print $1}')" = "$RESULT_SHA256"
+
+      - name: Upload signed evidence without OIDC authority
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: artifact-keyless-signed-evidence
+          path: ${{ runner.temp }}/signed-evidence/
+          if-no-files-found: error
+          retention-days: 30

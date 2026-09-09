@@ -1,0 +1,27 @@
+{
+  "$schema": "../profile-v1.schema.json",
+  "profileVersion": 1,
+  "id": "web-r1",
+  "artifactClass": "web",
+  "authorityMode": "source-authored",
+  "locale": "en-US",
+  "primaryOutput": {"format": "html", "purpose": "standards-based-web-delivery", "required": true, "editable": true},
+  "targetRenderer": {"name": "Chromium", "platform": "Linux/Windows/macOS", "required": true},
+  "secondaryRenderers": [
+    {"name": "Firefox", "platform": "cross-platform", "required": true},
+    {"name": "WebKit", "platform": "cross-platform", "required": true}
+  ],
+  "gates": {
+    "profileSchema": true,
+    "structural": true,
+    "semantic": true,
+    "visual": true,
+    "target": true,
+    "accessibility": true,
+    "conformance": true,
+    "deliveryReadback": true,
+    "releaseProvenance": true
+  },
+  "deliveryTargets": ["web-origin"],
+  "notes": "HTML/CSS/SVG source-authored profile. Browser parity and WCAG-oriented automated checks are independent from server/deployment health."
+}

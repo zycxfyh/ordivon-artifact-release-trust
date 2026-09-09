@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Artifact Delivery Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profileVersion",
+    "id",
+    "artifactClass",
+    "authorityMode",
+    "locale",
+    "primaryOutput",
+    "targetRenderer",
+    "gates",
+    "deliveryTargets"
+  ],
+  "properties": {
+    "profileVersion": {"const": 1},
+    "id": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "artifactClass": {
+      "enum": ["presentation", "document", "fixed-view", "archive", "accessible", "web", "spreadsheet"]
+    },
+    "authorityMode": {"enum": ["generated-managed", "office-authored", "source-authored"]},
+    "locale": {"type": "string", "minLength": 2},
+    "aspectRatio": {"enum": ["34:10", "16:9", "4:3", "9:16", "custom"]},
+    "primaryOutput": {"$ref": "#/$defs/output"},
+    "companions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/output"},
+      "uniqueItems": true
+    },
+    "targetRenderer": {"$ref": "#/$defs/renderer"},
+    "secondaryRenderers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/renderer"}
+    },
+    "unsupportedRenderers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "fontPolicy": {"enum": ["REQUIRED", "FALLBACK_ALLOWED", "FLATTEN_ALLOWED", "PROFILE_MANAGED"]},
+    "fonts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/font"}
+    },
+    "gates": {"$ref": "#/$defs/gates"},
+    "deliveryTargets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "semanticPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "placeholderPatterns": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "minimumSlideCount": {"type": "integer", "minimum": 1},
+        "maximumSlideCount": {"type": "integer", "minimum": 1}
+      }
+    },
+    "renderEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "widthPx": {"type": "integer", "minimum": 320},
+        "heightPx": {"type": "integer", "minimum": 240}
+      }
+    },
+    "conformancePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pdfFlavour": {"enum": ["4", "4f", "4e", "ua1", "ua2", "wt1r", "wt1a"]}
+      }
+    },
+    "notes": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"artifactClass": {"const": "presentation"}}, "required": ["artifactClass"]},
+      "then": {
+        "required": ["aspectRatio", "fontPolicy", "fonts"],
+        "properties": {"primaryOutput": {"properties": {"format": {"const": "pptx"}}}}
+      }
+    },
+    {
+      "if": {"properties": {"artifactClass": {"const": "document"}}, "required": ["artifactClass"]},
+      "then": {"properties": {"primaryOutput": {"properties": {"format": {"const": "docx"}}}}}
+    },
+    {
+      "if": {"properties": {"artifactClass": {"const": "spreadsheet"}}, "required": ["artifactClass"]},
+      "then": {"properties": {"primaryOutput": {"properties": {"format": {"const": "xlsx"}}}}}
+    },
+    {
+      "if": {"properties": {"artifactClass": {"const": "web"}}, "required": ["artifactClass"]},
+      "then": {"properties": {"primaryOutput": {"properties": {"format": {"const": "html"}}}}}
+    },
+    {
+      "if": {"properties": {"artifactClass": {"enum": ["fixed-view", "archive", "accessible"]}}, "required": ["artifactClass"]},
+      "then": {"properties": {"primaryOutput": {"properties": {"format": {"enum": ["pdf", "pdf-a-4", "pdf-ua-2"]}}}}}
+    }
+  ],
+  "$defs": {
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "purpose", "required"],
+      "properties": {
+        "format": {"enum": ["pptx", "docx", "pdf", "html", "xlsx", "pdf-a-4", "pdf-ua-2"]},
+        "purpose": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "editable": {"type": "boolean"}
+      }
+    },
+    "renderer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "platform", "required"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "platform": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"}
+      }
+    },
+    "font": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "required", "targetFiles", "embeddingPermission"],
+      "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "targetFiles": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "embeddingPermission": {"enum": ["allowed", "restricted", "unknown"]},
+        "licenseReference": {"type": "string"},
+        "fallbackFamily": {"type": "string"}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileSchema", "structural", "target", "deliveryReadback"],
+      "properties": {
+        "profileSchema": {"type": "boolean"},
+        "structural": {"type": "boolean"},
+        "dependency": {"type": "boolean"},
+        "semantic": {"type": "boolean"},
+        "visual": {"type": "boolean"},
+        "target": {"type": "boolean"},
+        "accessibility": {"type": "boolean"},
+        "conformance": {"type": "boolean"},
+        "companionPdf": {"type": "boolean"},
+        "deliveryReadback": {"type": "boolean"},
+        "releaseProvenance": {"type": "boolean"}
+      }
+    }
+  }
+}
