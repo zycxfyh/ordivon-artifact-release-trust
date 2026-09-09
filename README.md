@@ -3,3 +3,7 @@
 Minimal private carrier for the Artifact Build & Delivery production Sigstore keyless identity.
 
 The production workflow separates prepare/sign/publish privileges. Only the sign job receives `id-token: write`; it executes no third-party `uses:` steps. Stable signer identity lives in the trust policy while the exact workflow commit SHA is authorized through the GitHub environment.
+
+## License and retained rights
+
+Source, configuration, and documentation in this repository are licensed under the Apache License 2.0. Copyright remains with the applicable contributors; the license grants use, modification, patent, and redistribution rights without transferring ownership. The Ordivon name, logos, service marks, and other brand identifiers are not granted for trademark use except as permitted by Apache-2.0 section 6.
